@@ -23,9 +23,12 @@ EXP_MAX_WAIT = 60
 
 
 class DriveWorker(multiprocessing.Process):
-    def __init__(self, task_queue, folder_mapping, copy_mapping, log_queue, id_from, id_to, scopes):
+    def __init__(self, start_creds_file_name, dest_creds_file_name, task_queue, folder_mapping, copy_mapping,
+                 log_queue, id_from, id_to, scopes):
         multiprocessing.Process.__init__(self)
 
+        self.start_creds_file_name = start_creds_file_name
+        self.dest_creds_file_name = dest_creds_file_name
         self.task_queue = task_queue
         self.file_mapping = folder_mapping
         self.copy_mapping = copy_mapping
@@ -44,30 +47,12 @@ class DriveWorker(multiprocessing.Process):
     def run(self):
 
         # START ID CREDENTIAL FLOW
-        start_creds_file_name = '{}-credentials.dat'.format(self.id_from)
-        if not os.path.exists(start_creds_file_name):
-
-            flow = InstalledAppFlow.from_client_secrets_file('client_id.json', self.scopes)
-            start_creds = flow.run_local_server()
-
-            with open(start_creds_file_name, 'wb') as credentials_dat:
-                pickle.dump(start_creds, credentials_dat)
-        else:
-            with open(start_creds_file_name, 'rb') as credentials_dat:
-                start_creds = pickle.load(credentials_dat)
+        with open(self.start_creds_file_name, 'rb') as credentials_dat:
+            start_creds = pickle.load(credentials_dat)
 
         # DEST ID CREDENTIAL FLOW
-        dest_creds_file_name = '{}-credentials.dat'.format(self.id_to)
-        if not os.path.exists(dest_creds_file_name):
-
-            flow = InstalledAppFlow.from_client_secrets_file('client_id.json', self.scopes)
-            dest_creds = flow.run_local_server()
-
-            with open(dest_creds_file_name, 'wb') as credentials_dat:
-                pickle.dump(dest_creds, credentials_dat)
-        else:
-            with open(dest_creds_file_name, 'rb') as credentials_dat:
-                dest_creds = pickle.load(credentials_dat)
+        with open(self.dest_creds_file_name, 'rb') as credentials_dat:
+            dest_creds = pickle.load(credentials_dat)
 
         self.start_drive_sdk = build('drive', 'v3', credentials=start_creds)
         self.dest_drive_sdk = build('drive', 'v3', credentials=dest_creds)

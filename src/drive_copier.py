@@ -155,8 +155,9 @@ def main(client_secret, start_id, target_id, workers_cnt, folder_id, mapping_rep
     logging.config.dictConfig(logging_config_initial)
     logger = logging.getLogger('setup')
     logger.info('About to create workers ...')
-    workers = [drivecopyutils.DriveWorker(unsearched, folder_mapping, copy_mapping, logger_q, start_id, target_id,
-                                          scopes) for _ in range(workers_cnt)]
+    workers = [drivecopyutils.DriveWorker(start_creds_file_name, dest_creds_file_name, unsearched, folder_mapping,
+                                          copy_mapping, logger_q, start_id, target_id, scopes)
+               for _ in range(workers_cnt)]
 
     # we get the details of the root folder we want to copy
     root_folder_details = call_endpoint(start_drive_sdk.files().get, drive_get_params)
