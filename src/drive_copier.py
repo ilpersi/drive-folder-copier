@@ -103,6 +103,11 @@ def main(client_secret, start_id, target_id, workers_cnt, folder_id, mapping_rep
     # START ID CREDENTIAL FLOW
     start_creds_file_name = os.path.join(click.get_app_dir('drive-folder-copier'),
                                          '{}-credentials.dat'.format(start_id))
+
+    config_path = os.path.dirname(start_creds_file_name)
+    if config_path and not os.path.isdir(config_path):
+        os.makedirs(config_path)
+
     if not os.path.exists(start_creds_file_name):
 
         flow = InstalledAppFlow.from_client_secrets_file(client_secret, scopes)
@@ -120,6 +125,11 @@ def main(client_secret, start_id, target_id, workers_cnt, folder_id, mapping_rep
     # DEST ID CREDENTIAL FLOW
     dest_creds_file_name = os.path.join(click.get_app_dir('drive-folder-copier'),
                                         '{}-credentials.dat'.format(target_id))
+
+    config_path = os.path.dirname(dest_creds_file_name)
+    if config_path and not os.path.isdir(config_path):
+        os.makedirs(config_path)
+
     if not os.path.exists(dest_creds_file_name):
 
         flow = InstalledAppFlow.from_client_secrets_file('client_id.json', scopes)
