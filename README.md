@@ -1,0 +1,1 @@
+This is a simple tool to allow you copy files between users in different domains without changing the src sharing permissions.
