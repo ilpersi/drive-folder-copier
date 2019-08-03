@@ -1,0 +1,7 @@
+# ignored extensions
+*.json
+*.log
+
+# ignored paths
+venv/
+\.idea/
