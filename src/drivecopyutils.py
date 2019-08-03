@@ -1,21 +1,14 @@
 # standard imports
-import json
 import logging
 import logging.config
 import logging.handlers
 import multiprocessing
-import os
 import pickle
 
-import tenacity
-
-from src.backoff import execute_request, before_sleep_log
-
+from backoff import execute_request
 # third parties imports
 from google.auth.transport.requests import Request
-from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
-from googleapiclient import errors
 
 MAX_ATTEMPTS = 30
 EXP_MULTIPLIER = 0.5
@@ -164,7 +157,8 @@ class DriveWorker(multiprocessing.Process):
 
             # batch folder copy
             if gdrive_folders:  # if there are no folders, we skip
-                batch_folder_creation = DriveBatchFileManager(self.dest_drive_sdk)
+                batch_created_folders = []
+
                 for gdrive_folder in gdrive_folders:
                     folder_id = gdrive_folder.get('id')
                     folder_name = gdrive_folder.get('name')
@@ -181,41 +175,42 @@ class DriveWorker(multiprocessing.Process):
                         },
                         'fields': 'id,name,webViewLink',
                     }
-                    batch_folder_creation.add(self.dest_drive_sdk.files().create, drive_insert_params, folder_id)
 
-                batch_folder_creation.execute()
+                    insert_request = execute_request(self.dest_drive_sdk.files().create(**drive_insert_params))
+                    batch_created_folders.append((folder_id, insert_request))
+
                 # once the batch is over we add new folders to the task queue and we update the mapping
-                for original_folder_id, result in batch_folder_creation.results.items():
-                    response = result.get('response', False)
-                    if response:
-                        new_folder = {
-                            'id': response.get('id'),
-                            'name': response.get('name')
-                        }
+                for original_folder_id, result in batch_created_folders:
+                    new_folder = {
+                        'id': result.get('id'),
+                        'name': result.get('name')
+                    }
 
-                        old_folder = {
-                            'id': original_folder_id,
-                            'name': response.get('name')
-                        }
+                    old_folder = {
+                        'id': original_folder_id,
+                        'name': result.get('name')
+                    }
 
-                        mapping = {
-                            'name': response.get('name'),
-                            'mimeType': 'application/vnd.google-apps.folder',
-                            'canCopy': 'N/A',
-                            'original-id': original_folder_id,
-                            'copy-id': response.get('id'),
-                            'original-link': response.get('webViewLink')
-                                .replace(response.get('id'), original_folder_id),
-                            'copy-link': response.get('webViewLink'),
-                        }
+                    mapping = {
+                        'name': result.get('name'),
+                        'mimeType': 'application/vnd.google-apps.folder',
+                        'canCopy': 'N/A',
+                        'original-id': original_folder_id,
+                        'copy-id': result.get('id'),
+                        'original-link':
+                            result.get('webViewLink').replace(result.get('id'), original_folder_id),
+                        'copy-link': result.get('webViewLink'),
+                    }
 
-                        self.file_mapping[original_folder_id] = new_folder.get('id')
-                        self.copy_mapping.append(mapping)
-                        self.task_queue.put(old_folder)
+                    self.file_mapping[original_folder_id] = new_folder.get('id')
+                    self.copy_mapping.append(mapping)
+                    self.task_queue.put(old_folder)
 
             # batch temporary copy
             if gdrive_files:
-                batch_file_temp_copy = DriveBatchFileManager(self.start_drive_sdk, 3)
+                temporary_file_copies = []
+                final_file_copies = []
+
                 for gdrive_file in gdrive_files:
                     file_id = gdrive_file.get('id')
                     file_name = gdrive_file.get('name')
@@ -228,148 +223,70 @@ class DriveWorker(multiprocessing.Process):
                         },
                         'fields': 'id,name,parents',
                     }
-                    batch_file_temp_copy.add(self.start_drive_sdk.files().copy, tmp_copy_params, file_id)
+                    tmp_file_copy_request = execute_request(self.start_drive_sdk.files().copy(**tmp_copy_params))
 
-                batch_file_temp_copy.execute()
+                    # some times file copy is not working correctly and files are not created in the right folder
+                    if start_tmp_id not in tmp_file_copy_request.get('parents'):
+                        parents_update_params = {
+                            'fileId': tmp_file_copy_request.get('id'),
+                            'addParents': start_tmp_id,
+                            'removeParents': ",".join(tmp_file_copy_request.get('parents')),
+                        }
+
+                        execute_request(self.start_drive_sdk.files().update(**parents_update_params))
+
+                    temporary_file_copies.append((file_id, tmp_file_copy_request))
 
                 # once the batch is over, we prepare everything for the final copy and the final deletion
-                batch_file_final_copy = DriveBatchFileManager(self.dest_drive_sdk, 3)
-                batch_file_temp_delete = DriveBatchFileManager(self.start_drive_sdk)
-                for original_file_id, result in batch_file_temp_copy.results.items():
-                    temp_response = result.get('response', False)
-                    temp_file_id = temp_response.get('id')
-                    temp_file_name = temp_response.get('name')
+                for original_file_id, result in temporary_file_copies:
+                    temp_file_id = result.get('id')
+                    temp_file_name = result.get('name')
 
-                    if temp_response:
-                        dest_copy_params = {
-                            'fileId': temp_file_id,
-                            'body': {
-                                'name': temp_file_name,
-                                'parents': [dest_folder_id],
-                            },
-                            'fields': 'id,name,mimeType,name,webViewLink',
-                        }
-                        tmp_delete_params = {
-                            'fileId': temp_file_id
-                        }
-                        batch_file_final_copy.add(self.dest_drive_sdk.files().copy, dest_copy_params, original_file_id)
-                        batch_file_temp_delete.add(self.start_drive_sdk.files().delete, tmp_delete_params, temp_file_id)
+                    dest_copy_params = {
+                        'fileId': temp_file_id,
+                        'body': {
+                            'name': temp_file_name,
+                            'parents': [dest_folder_id],
+                        },
+                        'fields': 'id,name,mimeType,name,webViewLink,parents',
+                    }
+                    tmp_delete_params = {
+                        'fileId': temp_file_id
+                    }
 
-                batch_file_final_copy.execute()
-                batch_file_temp_delete.execute()
+                    final_copy_request = execute_request(self.dest_drive_sdk.files().copy(**dest_copy_params))
+
+                    # some times file copy is not working correctly and files are not created in the right folder
+                    if dest_folder_id not in final_copy_request.get('parents'):
+                        parents_update_params = {
+                            'fileId': final_copy_request.get('id'),
+                            'addParents': dest_folder_id,
+                            'removeParents': ",".join(final_copy_request.get('parents')),
+                        }
+
+                        execute_request(self.dest_drive_sdk.files().update(**parents_update_params))
+
+                    final_file_copies.append((original_file_id, final_copy_request))
+                    execute_request(self.start_drive_sdk.files().delete(**tmp_delete_params))
 
                 # we update the mapping with the newly copied files
-                for original_file_id, result in batch_file_final_copy.results.items():
-                    response = result.get('response', False)
-                    if response:
-                        mapping = {
-                            'name': response.get('name'),
-                            'mimeType': response.get('mimeType'),
-                            'canCopy': 'Y',
-                            'original-id': original_file_id,
-                            'copy-id': response.get('id'),
-                            'original-link': response.get('webViewLink').replace(response.get('id'), original_file_id),
-                            'copy-link': response.get('webViewLink'),
-                        }
+                for original_file_id, result in final_file_copies:
+                    mapping = {
+                        'name': result.get('name'),
+                        'mimeType': result.get('mimeType'),
+                        'canCopy': 'Y',
+                        'original-id': original_file_id,
+                        'copy-id': result.get('id'),
+                        'original-link': result.get('webViewLink').replace(result.get('id'), original_file_id),
+                        'copy-link': result.get('webViewLink'),
+                    }
 
-                        self.copy_mapping.append(mapping)
+                    self.copy_mapping.append(mapping)
 
             self.task_queue.task_done()
 
     def __str__(self):
         return "DriveWorker for [{id}] {name}".format(**self.path)
-
-
-class DriveBatchFileManager:
-    def __init__(self, service, max_batch_size=100):
-
-        self._service = service
-        self.max_batch_size = max_batch_size
-        self.results = {}
-
-        self._batch_list = [self._service.new_batch_http_request(callback=self._manage_responses), ]
-        self._request_cnt = 0
-        self._id_cnt = 0
-        self._id_mapping = {}
-
-        self._errors = []
-
-    def add(self, end_point, params, request_id, add_to_cache=True):
-
-        internal_id = str(self._id_cnt)
-        self._id_mapping[internal_id] = request_id
-        request = end_point(**params)
-
-        if add_to_cache:
-            if not self.results.get(request_id, False):
-                self.results[request_id] = {}
-            self.results[request_id]['end_point'] = end_point
-            self.results[request_id]['params'] = params
-
-        current_batch = (self._request_cnt // self.max_batch_size)
-
-        if len(self._batch_list) < (current_batch + 1):
-            self._batch_list.append(self._service.new_batch_http_request(callback=self._manage_responses))
-
-        self._batch_list[current_batch].add(request, request_id=internal_id)
-        self._request_cnt += 1
-        self._id_cnt += 1
-
-    @tenacity.retry(stop=tenacity.stop_after_attempt(MAX_ATTEMPTS),
-                    wait=tenacity.wait_exponential(multiplier=EXP_MULTIPLIER, max=EXP_MAX_WAIT),
-                    before_sleep=before_sleep_log)
-    def execute(self):
-
-        for batch_request in self._batch_list:
-            batch_request.execute()
-
-        if len(self._errors) != 0:
-            self._batch_list = [self._service.new_batch_http_request(callback=self._manage_responses), ]
-            self._request_cnt = 0
-
-            for request_error in self._errors:
-                request_exeption = request_error['exception']
-                internal_id = request_error['internal_id']
-                request_id = self._id_mapping[internal_id]
-
-                cache_element = self.results[request_id]
-                new_end_point = cache_element['end_point']
-                new_params = cache_element['params']
-
-                if isinstance(request_exeption, errors.HttpError):
-                    if isinstance(request_exeption.content, str):
-                        error_contet = request_exeption.content
-                    else:
-                        error_contet = request_exeption.content.decode('utf-8')
-                    error_details = json.loads(error_contet).get('error')
-                    error_code = error_details.get('code', 0)
-                    error_message = error_details.get('message', '')
-
-                    if error_code == 404:
-                        logging.debug('File not found when processing batch request')
-                        logging.debug(request_exeption)
-                    else:
-                        logging.debug('error_code: {}, error_message: {}'.format(error_code, error_message))
-                        self.add(new_end_point, new_params, request_id, False)
-
-                else:
-                    logging.warning('Unexpecte Exception Type: {}'.format(request_exeption))
-
-            self._errors = []
-            raise errors.BatchError('At least one item of a batch request returned an error')
-
-    def _manage_responses(self, internal_id, response, exception):
-        if exception is not None:
-            self._errors.append(
-                {
-                    'internal_id': internal_id,
-                    'response': response,
-                    'exception': exception,
-                }
-            )
-        else:
-            request_id = self._id_mapping[internal_id]
-            self.results[request_id]['response'] = response
 
 
 class LoggingListener(multiprocessing.Process):
