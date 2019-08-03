@@ -11,8 +11,8 @@ from functools import partial
 
 # import ad hoc developed modules
 
-from src import drivecopyutils
-from src.backoff import call_endpoint
+import drivecopyutils
+from backoff import call_endpoint
 
 # third parties import
 import click
