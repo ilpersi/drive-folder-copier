@@ -5,14 +5,12 @@ import logging.handlers
 import multiprocessing
 import pickle
 
+# project imports
 from backoff import execute_request
+
 # third parties imports
 from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
-
-MAX_ATTEMPTS = 30
-EXP_MULTIPLIER = 0.5
-EXP_MAX_WAIT = 60
 
 
 class DriveWorker(multiprocessing.Process):
