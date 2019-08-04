@@ -128,7 +128,7 @@ class DriveWorker(multiprocessing.Process):
             for gdrive_child in folder_childs:
                 child_name = gdrive_child.get('name')
                 child_mime_type = gdrive_child.get('mimeType')
-                child_size = gdrive_child.get('size')
+                child_size = int(gdrive_child.get('size', 0))
                 child_capabilities = gdrive_child.get('capabilities')
                 child_id = gdrive_child.get('id')
 
@@ -276,7 +276,7 @@ class DriveWorker(multiprocessing.Process):
                     mapping = {
                         'name': result.get('name'),
                         'mimeType': result.get('mimeType'),
-                        'size': result.get('size'),
+                        'size': int(result.get('size', 0)),
                         'canCopy': 'Y',
                         'original-id': original_file_id,
                         'copy-id': result.get('id'),

@@ -37,7 +37,7 @@ click.option = partial(click.option, show_default=True)
               help='The id of the folder you want to copy. My Drive will be used as default',)
 @click.option('--mapping-report', '-mr', metavar='<mapping_csv>', show_default=True, default='file_mapping.csv',
               help='Path where to save the csv output file containing the copy mapping.')
-@click.option('--max-size', '-mx', metavar='<bytes>', default=0,
+@click.option('--max-size', '-ms', metavar='<bytes>', default=0, type=int,
               help='If file size in bytes is bigger that this value, the copy will be skipped. Set to 0 for no limits.')
 def main(client_secret, start_id, target_id, workers_cnt, folder_id, mapping_report, max_size):
     """This tool will allow you to copy files and folders between domains without modifying the source sharing
