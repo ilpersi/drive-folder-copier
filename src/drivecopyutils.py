@@ -15,19 +15,24 @@ from googleapiclient.discovery import build
 
 class DriveWorker(multiprocessing.Process):
     def __init__(self, start_creds_file_name, dest_creds_file_name, task_queue, folder_mapping, copy_mapping,
-                 log_queue, id_from, id_to, max_size, scopes):
+                 log_queue, id_from, id_to, max_size, sqlite_path, already_copied_data, db_lock, scopes):
         multiprocessing.Process.__init__(self)
 
         self.start_creds_file_name = start_creds_file_name
         self.dest_creds_file_name = dest_creds_file_name
         self.task_queue = task_queue
-        self.file_mapping = folder_mapping
+        self.folder_mapping = folder_mapping
         self.copy_mapping = copy_mapping
         self.log_queue = log_queue
 
         self.id_from = id_from
         self.id_to = id_to
         self.max_size = max_size
+
+        self.sqlite_path = sqlite_path
+        self.already_copied_data = already_copied_data
+        self.db_lock = db_lock
+
         self.scopes = scopes
 
         # Properties used outside the init
@@ -101,8 +106,8 @@ class DriveWorker(multiprocessing.Process):
             self.logger.info(next_task)
             start_folder_id = next_task.get('id')
             # start_folder_full_name = next_task.get('name')
-            dest_folder_id = self.file_mapping.get(start_folder_id)
-            start_tmp_id = self.file_mapping.get('root_copy_tmp')
+            dest_folder_id = self.folder_mapping.get(start_folder_id)
+            start_tmp_id = self.folder_mapping.get('root_copy_tmp')
 
             page_size = 1000
             drive_list_params = {
@@ -139,7 +144,7 @@ class DriveWorker(multiprocessing.Process):
                     gdrive_folders.append(gdrive_child)
                 else:
                     if not child_capabilities.get('canCopy') or (child_size > self.max_size > 0):
-                        print('Skipping file: {}'.format(gdrive_child))
+                        # print('Skipping file: {}'.format(gdrive_child))
 
                         mapping = {
                             'name': child_name,
@@ -164,9 +169,15 @@ class DriveWorker(multiprocessing.Process):
                     folder_id = gdrive_folder.get('id')
                     folder_name = gdrive_folder.get('name')
 
-                    if self.file_mapping.get(folder_id):
-                        print("Folder {} already copyied".format(folder_id))
+                    if self.folder_mapping.get(folder_id):
+                        print("Folder {} already copied".format(folder_id))
                         continue
+
+                    insert_folder = False
+                    if self.already_copied_data.get(folder_id):
+                        copied_folder = self.already_copied_data.get(folder_id)
+                    else:
+                        pass
 
                     drive_insert_params = {
                         'body': {
@@ -204,7 +215,7 @@ class DriveWorker(multiprocessing.Process):
                         'copy-link': result.get('webViewLink'),
                     }
 
-                    self.file_mapping[original_folder_id] = new_folder.get('id')
+                    self.folder_mapping[original_folder_id] = new_folder.get('id')
                     self.copy_mapping.append(mapping)
                     self.task_queue.put(old_folder)
 
