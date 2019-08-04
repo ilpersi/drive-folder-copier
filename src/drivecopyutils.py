@@ -15,7 +15,7 @@ from googleapiclient.discovery import build
 
 class DriveWorker(multiprocessing.Process):
     def __init__(self, start_creds_file_name, dest_creds_file_name, task_queue, folder_mapping, copy_mapping,
-                 log_queue, id_from, id_to, scopes):
+                 log_queue, id_from, id_to, max_size, scopes):
         multiprocessing.Process.__init__(self)
 
         self.start_creds_file_name = start_creds_file_name
@@ -27,6 +27,7 @@ class DriveWorker(multiprocessing.Process):
 
         self.id_from = id_from
         self.id_to = id_to
+        self.max_size = max_size
         self.scopes = scopes
 
         # Properties used outside the init
@@ -108,7 +109,7 @@ class DriveWorker(multiprocessing.Process):
                 'pageSize': page_size,
                 'q': "'{}' in parents and trashed=false".format(start_folder_id),
                 'orderBy': 'name',
-                'fields': 'files(capabilities/canCopy,id,mimeType,name,webViewLink),nextPageToken',
+                'fields': 'files(capabilities/canCopy,id,mimeType,name,webViewLink,size),nextPageToken',
             }
 
             folder_childs = []
@@ -125,10 +126,11 @@ class DriveWorker(multiprocessing.Process):
 
             # we separate google drive folders from files in two different lists
             for gdrive_child in folder_childs:
-                child_capabilities = gdrive_child.get('capabilities')
-                child_id = gdrive_child.get('id')
                 child_name = gdrive_child.get('name')
                 child_mime_type = gdrive_child.get('mimeType')
+                child_size = gdrive_child.get('size')
+                child_capabilities = gdrive_child.get('capabilities')
+                child_id = gdrive_child.get('id')
 
                 if child_id == start_tmp_id:
                     continue
@@ -136,12 +138,13 @@ class DriveWorker(multiprocessing.Process):
                 if child_mime_type == 'application/vnd.google-apps.folder':
                     gdrive_folders.append(gdrive_child)
                 else:
-                    if not child_capabilities.get('canCopy'):
+                    if not child_capabilities.get('canCopy') or (child_size > self.max_size > 0):
                         print('Skipping file: {}'.format(gdrive_child))
 
                         mapping = {
                             'name': child_name,
                             'mimeType': child_mime_type,
+                            'size': child_size,
                             'canCopy': 'N',
                             'original-id': child_id,
                             'copy-id': '',
@@ -192,6 +195,7 @@ class DriveWorker(multiprocessing.Process):
                     mapping = {
                         'name': result.get('name'),
                         'mimeType': 'application/vnd.google-apps.folder',
+                        'size': 'N/A',
                         'canCopy': 'N/A',
                         'original-id': original_folder_id,
                         'copy-id': result.get('id'),
@@ -246,7 +250,7 @@ class DriveWorker(multiprocessing.Process):
                             'name': temp_file_name,
                             'parents': [dest_folder_id],
                         },
-                        'fields': 'id,name,mimeType,name,webViewLink,parents',
+                        'fields': 'id,name,mimeType,name,webViewLink,parents,size',
                     }
                     tmp_delete_params = {
                         'fileId': temp_file_id
@@ -272,6 +276,7 @@ class DriveWorker(multiprocessing.Process):
                     mapping = {
                         'name': result.get('name'),
                         'mimeType': result.get('mimeType'),
+                        'size': result.get('size'),
                         'canCopy': 'Y',
                         'original-id': original_file_id,
                         'copy-id': result.get('id'),

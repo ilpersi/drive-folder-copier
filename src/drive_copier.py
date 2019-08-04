@@ -25,48 +25,21 @@ click.option = partial(click.option, show_default=True)
 
 
 @click.command()
-@click.option(
-    '--client-secret',
-    '-cs',
-    metavar='<client_secret_json_file>',
-    default='client_id.json',
-    help='Path to OAuth2 client secret JSON file.')
-@click.option(
-    '--start-id',
-    '-s',
-    metavar='<start_email_address>',
-    required=True,
-    help='Email address of the source account'
-)
-@click.option(
-    '--target-id',
-    '-t',
-    metavar='<dest_email_address>',
-    required=True,
-    help='Email address of the target account'
-)
-@click.option(
-    '--workers-cnt',
-    '-n',
-    default=multiprocessing.cpu_count(),
-    help='The number of concurrent processes you want to run.',
-    # show_defaults=True
-)
-@click.option(
-    '--folder-id',
-    '-id',
-    metavar='<folder_id>',
-    default='root',
-    help='The id of the folder you want to copy. My Drive will be used as default',
-)
-@click.option(
-    '--mapping-report',
-    '-mr',
-    metavar='<mapping_csv>',
-    show_default=True,
-    default='file_mapping.csv',
-    help='Path where to save the csv output file containing the copy mapping.')
-def main(client_secret, start_id, target_id, workers_cnt, folder_id, mapping_report):
+@click.option('--client-secret', '-cs', metavar='<client_secret_json_file>', default='client_id.json',
+              help='Path to OAuth2 client secret JSON file.')
+@click.option('--start-id', '-s', metavar='<start_email_address>', required=True,
+              help='Email address of the source account')
+@click.option('--target-id', '-t', metavar='<dest_email_address>', required=True,
+              help='Email address of the target account')
+@click.option('--workers-cnt', '-n', default=multiprocessing.cpu_count() * 2,
+              help='The number of concurrent processes you want to run.')
+@click.option('--folder-id', '-id', metavar='<folder_id>', default='root',
+              help='The id of the folder you want to copy. My Drive will be used as default',)
+@click.option('--mapping-report', '-mr', metavar='<mapping_csv>', show_default=True, default='file_mapping.csv',
+              help='Path where to save the csv output file containing the copy mapping.')
+@click.option('--max-size', '-mx', metavar='<bytes>', default=0,
+              help='If file size in bytes is bigger that this value, the copy will be skipped. Set to 0 for no limits.')
+def main(client_secret, start_id, target_id, workers_cnt, folder_id, mapping_report, max_size):
     """This tool will allow you to copy files and folders between domains without modifying the source sharing
     permissions."""
     dt_start = datetime.now()
@@ -156,7 +129,7 @@ def main(client_secret, start_id, target_id, workers_cnt, folder_id, mapping_rep
     logger = logging.getLogger('setup')
     logger.info('About to create workers ...')
     workers = [drivecopyutils.DriveWorker(start_creds_file_name, dest_creds_file_name, unsearched, folder_mapping,
-                                          copy_mapping, logger_q, start_id, target_id, scopes)
+                                          copy_mapping, logger_q, start_id, target_id, max_size, scopes)
                for _ in range(workers_cnt)]
 
     # we get the details of the root folder we want to copy
@@ -218,7 +191,7 @@ def main(client_secret, start_id, target_id, workers_cnt, folder_id, mapping_rep
 
     # we delete the temporary folder on the origin account
     tmp_del_params = {
-         'fileId': start_tmp.get('id'),
+        'fileId': start_tmp.get('id'),
     }
     call_endpoint(start_drive_sdk.files().delete, tmp_del_params)
 
@@ -235,7 +208,7 @@ def main(client_secret, start_id, target_id, workers_cnt, folder_id, mapping_rep
 
             writer.writerow(mapping)
 
-    print(datetime.now()-dt_start)
+    print(datetime.now() - dt_start)
 
 
 if __name__ == '__main__':
