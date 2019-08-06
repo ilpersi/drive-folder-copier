@@ -11,14 +11,16 @@ EXP_MAX_WAIT = 60
 
 # In what case should tenacity try again?
 retry_exceptions = (
+
     # https://developers.google.com/drive/api/v3/handle-errors#403_user_rate_limit_exceeded
     tenacity.retry_if_exception_message(match=r".+?User Rate Limit Exceeded\.")
-    or tenacity.retry_if_exception_message(match=r".+?Rate limit exceeded\.")
+    | tenacity.retry_if_exception_message(match=r".+?Rate limit exceeded\.")
+
     # https://developers.google.com/drive/api/v3/handle-errors#500_backend_error
-    or tenacity.retry_if_exception_message(match=r".+?Internal Error")
-    or tenacity.retry_if_exception_message(match=r".+?Transient failure")
-    or tenacity.retry_if_exception_message(match=r".+?The read operation timed out")
-    or tenacity.retry_if_exception_type(timeout)
+    | tenacity.retry_if_exception_message(match=r".+?Internal Error")
+    | tenacity.retry_if_exception_message(match=r".+?Transient failure")
+    | tenacity.retry_if_exception_message(match=r".+?The read operation timed out")
+    | tenacity.retry_if_exception_type(timeout)
 )
 
 
