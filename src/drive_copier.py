@@ -34,7 +34,7 @@ click.option = partial(click.option, show_default=True)
 @click.option('--workers-cnt', '-n', default=multiprocessing.cpu_count() * 2,
               help='The number of concurrent processes you want to run.')
 @click.option('--folder-id', '-id', metavar='<folder_id>', default='root',
-              help='The id of the folder you want to copy. My Drive will be used as default',)
+              help='The id of the folder you want to copy. My Drive will be used as default', )
 @click.option('--mapping-report', '-mr', metavar='<mapping_csv>', show_default=True, default='file_mapping.csv',
               help='Path where to save the csv output file containing the copy mapping.')
 @click.option('--max-size', '-ms', metavar='<bytes>', default=0, type=int,
@@ -55,22 +55,27 @@ def main(client_secret, start_id, target_id, workers_cnt, folder_id, mapping_rep
 
     logging_config_initial = {
         'version': 1,
+        'disable_existing_loggers': False,
         'formatters': {
             'detailed': {
                 'class': 'logging.Formatter',
-                'format': '%(asctime)s %(name)-15s %(levelname)-8s %(processName)-10s %(message)s'
+                'format': '%(asctime)s %(name)15s %(levelname)8s %(processName)-10s %(message)s'
             }
         },
         'handlers': {
             'console': {
                 'class': 'logging.StreamHandler',
                 'level': 'INFO',
+                'formatter': 'detailed',
             },
         },
-        'root': {
-            'level': 'DEBUG',
-            'handlers': ['console']
-        },
+        'loggers': {
+            'drive_copier': {
+                'level': 'DEBUG',
+                'handlers': ['console'],
+                'propagate': False,
+            },
+        }
     }
 
     # START ID CREDENTIAL FLOW
@@ -126,7 +131,7 @@ def main(client_secret, start_id, target_id, workers_cnt, folder_id, mapping_rep
     }
 
     logging.config.dictConfig(logging_config_initial)
-    logger = logging.getLogger('setup')
+    logger = logging.getLogger('drive_copier')
     logger.info('About to create workers ...')
     workers = [drivecopyutils.DriveWorker(start_creds_file_name, dest_creds_file_name, unsearched, folder_mapping,
                                           copy_mapping, logger_q, start_id, target_id, max_size, scopes)
