@@ -6,7 +6,7 @@ import multiprocessing
 import pickle
 
 # project imports
-from backoff import execute_request
+from backoff import execute_request_with_logger
 
 # third parties imports
 from google.auth.transport.requests import Request
@@ -39,7 +39,8 @@ class DriveWorker(multiprocessing.Process):
         self.start_drive_sdk = None
         self.dest_drive_sdk = None
         self.path = {'id': None, 'name': None}
-        self.logger = None
+        self.api_logger = None
+        self.queue_logger = None
 
     def run(self):
 
@@ -61,30 +62,48 @@ class DriveWorker(multiprocessing.Process):
                 'detailed': {
                     'class': 'logging.Formatter',
                     'format': '%(asctime)s %(name)-15s %(levelname)-8s %(processName)-10s %(message)s'
+                },
+                'api': {
+                    'class': 'logging.Formatter',
+                    'format': '%(asctime)s %(levelname)-6s %(message)s'
                 }
             },
             'handlers': {
                 'queue': {
                     'class': 'logging.handlers.QueueHandler',
                     'queue': self.log_queue,
+                    'level': 'INFO',
                 },
                 'console': {
                     'class': 'logging.StreamHandler',
                     'level': 'DEBUG',
                 },
+                'api': {
+                    'class': 'logging.FileHandler',
+                    'filename': '{}.log'.format(self.name),
+                    'mode': 'w',
+                    'formatter': 'api',
+                    'encoding': 'utf-8',
+                    'level': 'DEBUG',
+                },
             },
-            'root': {
-                'level': 'DEBUG',
-                'handlers': ['queue']
-            },
-            self.name: {
-                'level': 'DEBUG',
-                'handlers': ['console'],
-                'formatter': 'detailed'
+            'loggers': {
+                'queue': {
+                    'level': 'INFO',
+                    'handlers': ['queue'],
+                    'propagate': False,
+                },
+                '{}_api'.format(self.name): {
+                    'level': 'DEBUG',
+                    'handlers': ['api'],
+                    'formatter': 'detailed',
+                    'propagate': False,
+                },
             },
         }
         logging.config.dictConfig(config_worker)
-        self.logger = logging.getLogger(self.name)
+        self.api_logger = logging.getLogger('{}_api'.format(self.name))
+        self.queue_logger = logging.getLogger('queue')
 
         while True:
 
@@ -98,12 +117,12 @@ class DriveWorker(multiprocessing.Process):
 
             if next_task is None:
                 # Poison pill means shutdown
-                print('{}: Exiting'.format(self.name))
+                self.queue_logger.info('{}: Exiting'.format(self.name))
 
                 self.task_queue.task_done()
                 break
 
-            self.logger.info(next_task)
+            self.api_logger.debug(next_task)
             start_folder_id = next_task.get('id')
             # start_folder_full_name = next_task.get('name')
             dest_folder_id = self.folder_mapping.get(start_folder_id)
@@ -119,10 +138,12 @@ class DriveWorker(multiprocessing.Process):
 
             folder_childs = []
 
+            self.api_logger.debug("CALL: self.start_drive_sdk.files().list(): {}".format(drive_list_params))
             files = self.start_drive_sdk.files()
             request = files.list(**drive_list_params)
             while request is not None:
-                current_files = execute_request(request)
+                current_files = execute_request_with_logger(request, self.api_logger, self.api_logger.level)
+                self.api_logger.debug("RESPONSE: self.start_drive_sdk.files().list(): {}".format(current_files))
                 folder_childs.extend(current_files.get('files', []))
                 request = files.list_next(request, current_files)
 
@@ -144,7 +165,7 @@ class DriveWorker(multiprocessing.Process):
                     gdrive_folders.append(gdrive_child)
                 else:
                     if not child_capabilities.get('canCopy') or (child_size > self.max_size > 0):
-                        # print('Skipping file: {}'.format(gdrive_child))
+                        self.queue_logger.debug('Skipping file: {}'.format(gdrive_child))
 
                         mapping = {
                             'name': child_name,
@@ -188,7 +209,12 @@ class DriveWorker(multiprocessing.Process):
                         'fields': 'id,name,webViewLink',
                     }
 
-                    insert_request = execute_request(self.dest_drive_sdk.files().create(**drive_insert_params))
+                    self.api_logger.debug("CALL: self.dest_drive_sdk.files().create(): {}".format(drive_insert_params))
+                    insert_request = execute_request_with_logger(
+                        self.dest_drive_sdk.files().create(**drive_insert_params),
+                        self.api_logger, self.api_logger.level)
+                    self.api_logger.debug("RESPONSE: self.dest_drive_sdk.files().create(): {}".format(insert_request))
+
                     batch_created_folders.append((folder_id, insert_request))
 
                 # once the batch is over we add new folders to the task queue and we update the mapping
@@ -236,7 +262,11 @@ class DriveWorker(multiprocessing.Process):
                         },
                         'fields': 'id,name,parents',
                     }
-                    tmp_file_copy_request = execute_request(self.start_drive_sdk.files().copy(**tmp_copy_params))
+                    self.api_logger.debug("CALL: self.start_drive_sdk.files().copy(): {}".format(tmp_copy_params))
+                    tmp_file_copy_request = execute_request_with_logger(
+                        self.start_drive_sdk.files().copy(**tmp_copy_params), self.api_logger, self.api_logger.level)
+                    self.api_logger.debug("RESPONSE: self.start_drive_sdk.files().copy(): {}"
+                                          .format(tmp_file_copy_request))
 
                     # some times file copy is not working correctly and files are not created in the right folder
                     if start_tmp_id not in tmp_file_copy_request.get('parents'):
@@ -246,7 +276,13 @@ class DriveWorker(multiprocessing.Process):
                             'removeParents': ",".join(tmp_file_copy_request.get('parents')),
                         }
 
-                        execute_request(self.start_drive_sdk.files().update(**parents_update_params))
+                        self.api_logger.debug("CALL: self.start_drive_sdk.files().update(): {}"
+                                              .format(parents_update_params))
+                        parents_update_req = execute_request_with_logger(self.start_drive_sdk.files()
+                                                                         .update(**parents_update_params),
+                                                                         self.api_logger, self.api_logger.level)
+                        self.api_logger.debug("RESPONSE: self.start_drive_sdk.files().update(): {}"
+                                              .format(parents_update_req))
 
                     temporary_file_copies.append((file_id, tmp_file_copy_request))
 
@@ -267,7 +303,10 @@ class DriveWorker(multiprocessing.Process):
                         'fileId': temp_file_id
                     }
 
-                    final_copy_request = execute_request(self.dest_drive_sdk.files().copy(**dest_copy_params))
+                    self.api_logger.debug("CALL: self.dest_drive_sdk.files().copy(): {}".format(dest_copy_params))
+                    final_copy_request = execute_request_with_logger(
+                        self.dest_drive_sdk.files().copy(**dest_copy_params), self.api_logger, self.api_logger.level)
+                    self.api_logger.debug("RESPONSE: self.dest_drive_sdk.files().copy(): {}".format(final_copy_request))
 
                     # some times file copy is not working correctly and files are not created in the right folder
                     if dest_folder_id not in final_copy_request.get('parents'):
@@ -277,10 +316,22 @@ class DriveWorker(multiprocessing.Process):
                             'removeParents': ",".join(final_copy_request.get('parents')),
                         }
 
-                        execute_request(self.dest_drive_sdk.files().update(**parents_update_params))
+                        self.api_logger.debug("CALL: self.dest_drive_sdk.files().update(): {}"
+                                              .format(parents_update_params))
+                        parents_update_req = execute_request_with_logger(self.dest_drive_sdk.files()
+                                                                         .update(**parents_update_params),
+                                                                         self.api_logger, self.api_logger.level)
+                        self.api_logger.debug("RESPONSE: self.dest_drive_sdk.files().update(): {}"
+                                              .format(parents_update_req))
 
                     final_file_copies.append((original_file_id, final_copy_request))
-                    execute_request(self.start_drive_sdk.files().delete(**tmp_delete_params))
+
+                    self.api_logger.debug("CALL: self.start_drive_sdk.files().delete(): {}".format(tmp_delete_params))
+                    tmp_delete_req = execute_request_with_logger(
+                        self.start_drive_sdk.files().delete(**tmp_delete_params), self.api_logger,
+                        self.api_logger.level)
+                    self.api_logger.debug("RESPONSE: self.start_drive_sdk.files().delete(): {}"
+                                          .format(tmp_delete_req))
 
                 # we update the mapping with the newly copied files
                 for original_file_id, result in final_file_copies:
@@ -323,7 +374,7 @@ class LoggingListener(multiprocessing.Process):
                 },
                 'simple': {
                     'class': 'logging.Formatter',
-                    'format': '%(name)-15s %(levelname)-8s %(processName)-10s %(message)s'
+                    'format': '%(asctime)s %(levelname)-8s %(processName)-10s %(message)s'
                 }
             },
             'handlers': {
@@ -348,8 +399,8 @@ class LoggingListener(multiprocessing.Process):
                 }
             },
             'root': {
-                'level': 'DEBUG',
-                'handlers': ['console', 'file']
+                'level': 'INFO',
+                'handlers': ['console']
             },
             'loggers': {
                 'googleapiclient.discovery': {

@@ -1,6 +1,7 @@
 # ignored extensions
 *.json
 *.log
+*.csv
 
 # ignored paths
 venv/

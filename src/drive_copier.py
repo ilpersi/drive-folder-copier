@@ -62,22 +62,27 @@ def main(client_secret, start_id, target_id, workers_cnt, folder_id, mapping_rep
 
     logging_config_initial = {
         'version': 1,
+        'disable_existing_loggers': False,
         'formatters': {
             'detailed': {
                 'class': 'logging.Formatter',
-                'format': '%(asctime)s %(name)-15s %(levelname)-8s %(processName)-10s %(message)s'
+                'format': '%(asctime)s %(name)15s %(levelname)8s %(processName)-10s %(message)s'
             }
         },
         'handlers': {
             'console': {
                 'class': 'logging.StreamHandler',
                 'level': 'INFO',
+                'formatter': 'detailed',
             },
         },
-        'root': {
-            'level': 'DEBUG',
-            'handlers': ['console']
-        },
+        'loggers': {
+            'drive_copier': {
+                'level': 'DEBUG',
+                'handlers': ['console'],
+                'propagate': False,
+            },
+        }
     }
 
     app_dir = click.get_app_dir('drive-folder-copier')
@@ -142,7 +147,7 @@ def main(client_secret, start_id, target_id, workers_cnt, folder_id, mapping_rep
     }
 
     logging.config.dictConfig(logging_config_initial)
-    logger = logging.getLogger('setup')
+    logger = logging.getLogger('drive_copier')
     logger.info('About to create workers ...')
     workers = [drivecopyutils.DriveWorker(start_creds_file_name, dest_creds_file_name, unsearched, folder_mapping,
                                           copy_mapping, logger_q, start_id, target_id, max_size,
