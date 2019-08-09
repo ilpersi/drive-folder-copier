@@ -148,7 +148,7 @@ def main(client_secret, start_id, target_id, workers_cnt, folder_id, mapping_rep
 
     logging.config.dictConfig(logging_config_initial)
     logger = logging.getLogger('drive_copier')
-    logger.info('About to create workers ...')
+    logger.info('About to create {} worker(s) ...'.format(workers_cnt))
     workers = [drivecopyutils.DriveWorker(start_creds_file_name, dest_creds_file_name, unsearched, folder_mapping,
                                           copy_mapping, logger_q, start_id, target_id, max_size,
                                           db_persistency.sqlite_path, already_copied_data, db_lock, scopes)
