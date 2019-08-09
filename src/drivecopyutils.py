@@ -11,6 +11,8 @@ from backoff import execute_request_with_logger
 # third parties imports
 from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
+from tenacity import RetryError
 
 
 class DriveWorker(multiprocessing.Process):
@@ -86,7 +88,7 @@ class DriveWorker(multiprocessing.Process):
                 'queue': {
                     'level': 'INFO',
                     'handlers': ['queue'],
-                    'propagate': False,
+                    'propagate': True,
                 },
                 '{}_api'.format(self.name): {
                     'level': 'DEBUG',
@@ -99,6 +101,11 @@ class DriveWorker(multiprocessing.Process):
         logging.config.dictConfig(config_worker)
         self.api_logger = logging.getLogger('{}_api'.format(self.name))
         self.queue_logger = logging.getLogger('queue')
+
+        # when trying to copy some mimeTypes, the APIs will return a Bad Request error, so we skip them
+        excluded_mime_type = {
+            'application/vnd.google-apps.fusiontable',  # Fusion Tables, going to be dismissed in december 2019
+        }
 
         while True:
 
@@ -117,10 +124,12 @@ class DriveWorker(multiprocessing.Process):
                 self.task_queue.task_done()
                 break
 
-            self.api_logger.debug(next_task)
+            self.queue_logger.info(next_task)
             start_folder_id = next_task.get('id')
             # start_folder_full_name = next_task.get('name')
             dest_folder_id = self.file_mapping.get(start_folder_id)
+
+            # the temporary folder used to do the firs copy of the files
             start_tmp_id = self.file_mapping.get('root_copy_tmp')
 
             page_size = 1000
@@ -133,6 +142,7 @@ class DriveWorker(multiprocessing.Process):
 
             folder_childs = []
 
+            # we list all the files in a folder
             self.api_logger.debug("CALL: self.start_drive_sdk.files().list(): {}".format(drive_list_params))
             files = self.start_drive_sdk.files()
             request = files.list(**drive_list_params)
@@ -142,6 +152,7 @@ class DriveWorker(multiprocessing.Process):
                 folder_childs.extend(current_files.get('files', []))
                 request = files.list_next(request, current_files)
 
+            # separate list for files and for folders
             gdrive_folders = []
             gdrive_files = []
 
@@ -153,13 +164,20 @@ class DriveWorker(multiprocessing.Process):
                 child_capabilities = gdrive_child.get('capabilities')
                 child_id = gdrive_child.get('id')
 
+                # we skip the temporary folder
                 if child_id == start_tmp_id:
                     continue
 
                 if child_mime_type == 'application/vnd.google-apps.folder':
                     gdrive_folders.append(gdrive_child)
                 else:
-                    if not child_capabilities.get('canCopy') or (child_size > self.max_size > 0):
+                    # we make sure we can copy the file. We skip if one of the following conditions is true:
+                    # 1) Drive does not allow the copy (canCopy == False)
+                    # 2) the file size is bigger than the one passed in the cmd line arguments
+                    # 3) the mimeType is part of the excluded mimeTypes
+                    if not child_capabilities.get('canCopy')\
+                            or (child_size > self.max_size > 0) \
+                            or child_mime_type in excluded_mime_type:
                         self.queue_logger.debug('Skipping file: {}'.format(gdrive_child))
 
                         mapping = {
@@ -185,6 +203,8 @@ class DriveWorker(multiprocessing.Process):
                     folder_id = gdrive_folder.get('id')
                     folder_name = gdrive_folder.get('name')
 
+                    # Folders can have more than one parent, so sometimes it may happen to copy them more than once
+                    # TODO the tool currently skips the copy, it should fix the parents at destination instead
                     if self.file_mapping.get(folder_id):
                         self.queue_logger.warning("Folder {} already copyied".format(folder_id))
                         continue
@@ -204,6 +224,7 @@ class DriveWorker(multiprocessing.Process):
                         self.api_logger, self.api_logger.level)
                     self.api_logger.debug("RESPONSE: self.dest_drive_sdk.files().create(): {}".format(insert_request))
 
+                    # we save the newly crated folder with a reference to the old one
                     batch_created_folders.append((folder_id, insert_request))
 
                 # once the batch is over we add new folders to the task queue and we update the mapping
@@ -234,7 +255,7 @@ class DriveWorker(multiprocessing.Process):
                     self.copy_mapping.append(mapping)
                     self.task_queue.put(old_folder)
 
-            # batch temporary copy
+            # temporary file copy
             if gdrive_files:
                 temporary_file_copies = []
                 final_file_copies = []
@@ -251,11 +272,19 @@ class DriveWorker(multiprocessing.Process):
                         },
                         'fields': 'id,name,parents',
                     }
+
+                    # Sometime Google APIs won't let us copy files even after many retries. When this happens, we
+                    # fail gently notifying the user
                     self.api_logger.debug("CALL: self.start_drive_sdk.files().copy(): {}".format(tmp_copy_params))
-                    tmp_file_copy_request = execute_request_with_logger(
-                        self.start_drive_sdk.files().copy(**tmp_copy_params), self.api_logger, self.api_logger.level)
-                    self.api_logger.debug("RESPONSE: self.start_drive_sdk.files().copy(): {}"
-                                          .format(tmp_file_copy_request))
+                    try:
+                        tmp_file_copy_request = execute_request_with_logger(
+                            self.start_drive_sdk.files().copy(**tmp_copy_params), self.api_logger, self.api_logger.level)
+                        self.api_logger.debug("RESPONSE: self.start_drive_sdk.files().copy(): {}"
+                                              .format(tmp_file_copy_request))
+                    except RetryError:
+                        self.api_logger.debug("ERROR: self.start_drive_sdk.files().copy(): {}".format(tmp_copy_params))
+                        self.queue_logger.error("It was impossible to copy file {} : {}".format(file_id, file_name))
+                        continue
 
                     # some times file copy is not working correctly and files are not created in the right folder
                     if start_tmp_id not in tmp_file_copy_request.get('parents'):
@@ -315,12 +344,22 @@ class DriveWorker(multiprocessing.Process):
 
                     final_file_copies.append((original_file_id, final_copy_request))
 
-                    self.api_logger.debug("CALL: self.start_drive_sdk.files().delete(): {}".format(tmp_delete_params))
-                    tmp_delete_req = execute_request_with_logger(
-                        self.start_drive_sdk.files().delete(**tmp_delete_params), self.api_logger,
-                        self.api_logger.level)
-                    self.api_logger.debug("RESPONSE: self.start_drive_sdk.files().delete(): {}"
-                                          .format(tmp_delete_req))
+                    # sometimes, when deleting a file, even if Google API return errors (e.g., 500), files are deleted
+                    # to manage this the copier fails gracefully
+                    try:
+                        self.api_logger.debug(
+                            "CALL: self.start_drive_sdk.files().delete(): {}".format(tmp_delete_params))
+                        tmp_delete_req = execute_request_with_logger(
+                            self.start_drive_sdk.files().delete(**tmp_delete_params), self.api_logger,
+                            self.api_logger.level)
+                        self.api_logger.debug("RESPONSE: self.start_drive_sdk.files().delete(): {}"
+                                              .format(tmp_delete_req))
+                    except HttpError as he:
+                        he_str = str(he)
+                        if "File not found: {}".format(temp_file_id) in str(he_str):
+                            self.api_logger.debug("EXCEPTION: self.start_drive_sdk.files().delete(): {}".format(he_str))
+                        else:
+                            raise he
 
                 # we update the mapping with the newly copied files
                 for original_file_id, result in final_file_copies:
