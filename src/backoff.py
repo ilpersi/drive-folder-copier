@@ -20,6 +20,7 @@ retry_exceptions = (
     | tenacity.retry_if_exception_message(match=r".+?Internal Error")
     | tenacity.retry_if_exception_message(match=r".+?Transient failure")
     | tenacity.retry_if_exception_message(match=r".+?The read operation timed out")
+    | tenacity.retry_if_exception_message(match=r".+?HttpError 500")
 
     | tenacity.retry_if_exception_type(timeout)
     | tenacity.retry_if_exception_type(ConnectionResetError)
